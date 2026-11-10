@@ -1,0 +1,51 @@
+const int buttonPin = 2;
+const int ledPin = 3;
+
+const int PRESSED = HIGH;   
+
+int mode = 0;               // 0 恆亮, 1 慢閃, 2 中閃, 3 快閃
+int lastButtonState = !PRESSED;
+unsigned long lastPressTime = 0;
+
+unsigned long lastBlinkTime = 0;
+bool ledOn = true;
+
+void setup() {
+  pinMode(ledPin, OUTPUT);
+  pinMode(buttonPin, INPUT);
+  Serial.begin(9600);
+}
+
+void loop() {
+  int buttonState = digitalRead(buttonPin);
+
+  if (buttonState == PRESSED && lastButtonState != PRESSED
+      && millis() - lastPressTime > 50) {
+    mode = mode + 1;
+    if (mode > 3) {
+      mode = 0;             
+    }
+    lastPressTime = millis();
+    lastBlinkTime = millis();
+    ledOn = true;
+    Serial.print("Mode: ");
+    Serial.println(mode);
+  }
+  lastButtonState = buttonState;
+
+  // 依模式決定閃爍間隔
+  int interval = 0;
+  if (mode == 1) interval = 1000;   // 慢閃
+  if (mode == 2) interval = 400;    // 不快不慢
+  if (mode == 3) interval = 100;    // 快閃
+
+  if (mode == 0) {
+    digitalWrite(ledPin, HIGH);     // 恆亮
+  } else {
+    if (millis() - lastBlinkTime >= interval) {
+      ledOn = !ledOn;
+      lastBlinkTime = millis();
+    }
+    digitalWrite(ledPin, ledOn ? HIGH : LOW);
+  }
+}
