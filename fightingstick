@@ -1,0 +1,209 @@
+const int R_PIN = 9;
+const int G_PIN = 10;
+const int B_PIN = 11;
+const int BUTTON_PIN = 2;
+const int POT_PIN = A0;
+
+const bool COMMON_ANODE = true;   // 共陽極模組
+
+const int MODE_COUNT = 4;
+int mode = 0;
+int potValue = 0;
+int fanHue = 0;                   // 應援色（模式 0 選的顏色）
+
+// 按鈕
+bool lastButton = HIGH;
+unsigned long pressStart = 0;
+bool longPressDone = false;
+
+// 切換模式時的白光提示
+unsigned long modeFlashStart = 0;
+bool modeFlashing = false;
+
+// 應援爆發（額外功能）
+bool bursting = false;
+unsigned long burstStart = 0;
+
+// 彩虹流光用
+int rainbowHue = 0;
+unsigned long lastRainbowStep = 0;
+
+// ---------- 燈光基本函式 ----------
+
+void setRGBLEDColor(int r, int g, int b) {
+  if (COMMON_ANODE) {
+    r = 255 - r;
+    g = 255 - g;
+    b = 255 - b;
+  }
+  analogWrite(R_PIN, r);
+  analogWrite(G_PIN, g);
+  analogWrite(B_PIN, b);
+}
+
+// 色相（0~359）+ 亮度（0~255）→ 設定 LED 顏色
+void setHue(int hue, int bright) {
+  int r, g, b;
+  hue = hue % 360;
+  int sector = hue / 60;
+  int f = (hue % 60) * 255 / 60;
+  int q = 255 - f;
+
+  switch (sector) {
+    case 0:  r = 255; g = f;   b = 0;   break;
+    case 1:  r = q;   g = 255; b = 0;   break;
+    case 2:  r = 0;   g = 255; b = f;   break;
+    case 3:  r = 0;   g = q;   b = 255; break;
+    case 4:  r = f;   g = 0;   b = 255; break;
+    default: r = 255; g = 0;   b = q;   break;
+  }
+
+  r = (long)r * bright / 255;
+  g = (long)g * bright / 255;
+  b = (long)b * bright / 255;
+  setRGBLEDColor(r, g, b);
+}
+
+// ---------- 按鈕 ----------
+
+void checkButton() {
+  bool reading = digitalRead(BUTTON_PIN);
+  unsigned long now = millis();
+
+  // 剛按下
+  if (reading == LOW && lastButton == HIGH) {
+    pressStart = now;
+    longPressDone = false;
+  }
+
+  // 按住超過 0.8 秒 → 應援爆發
+  if (reading == LOW && !longPressDone && now - pressStart > 800) {
+    longPressDone = true;
+    bursting = true;
+    burstStart = now;
+  }
+
+  // 放開：如果不是長按，就是短按 → 切換模式
+  if (reading == HIGH && lastButton == LOW) {
+    if (!longPressDone && now - pressStart > 30) {   // 30ms 防彈跳
+      mode = (mode + 1) % MODE_COUNT;
+      modeFlashing = true;
+      modeFlashStart = now;
+      Serial.print("Mode: ");
+      Serial.println(mode);
+    }
+  }
+
+  lastButton = reading;
+}
+
+// ---------- 各模式 ----------
+
+// 模式 0：應援色，可變電阻選顏色
+void modeFanColor() {
+  fanHue = map(potValue, 0, 1023, 0, 359);
+  setHue(fanHue, 255);
+}
+
+// 模式 1：彩虹流光，可變電阻控制速度
+void modeRainbow(unsigned long now) {
+  int stepTime = map(potValue, 0, 1023, 30, 1);   // 每轉 1 度要幾 ms
+  if (now - lastRainbowStep >= (unsigned long)stepTime) {
+    rainbowHue = (rainbowHue + 1) % 360;
+    lastRainbowStep = now;
+  }
+  setHue(rainbowHue, 255);
+}
+
+// 模式 2：節奏打拍，可變電阻控制 BPM
+void modeBeat(unsigned long now) {
+  int bpm = map(potValue, 0, 1023, 60, 200);
+  unsigned long period = 60000UL / bpm;
+  unsigned long phase = now % period;
+  unsigned long beatIndex = now / period;
+
+  // 每一拍一開始最亮，然後漸暗
+  int bright = 255 - (long)phase * 255 / period;
+
+  if (beatIndex % 2 == 0) {
+    setHue(fanHue, bright);                  // 應援色
+  } else {
+    setRGBLEDColor(bright, bright, bright);  // 白色
+  }
+}
+
+// 模式 3：呼吸燈，可變電阻控制呼吸速度
+void modeBreath(unsigned long now) {
+  unsigned long period = map(potValue, 0, 1023, 4000, 800);
+  unsigned long phase = now % period;
+  int x;
+  if (phase < period / 2) {
+    x = (long)phase * 510 / period;
+  } else {
+    x = (long)(period - phase) * 510 / period;
+  }
+  int bright = (long)x * x / 255;   // 讓呼吸看起來更柔和
+  setHue(fanHue, bright);
+}
+
+// 額外功能：應援爆發
+void runBurst(unsigned long now) {
+  unsigned long t = now - burstStart;
+
+  if (t >= 3000) {
+    bursting = false;
+    return;
+  }
+
+  if (t < 2000) {
+    // 前 2 秒：彩虹快速爆閃
+    if ((t / 60) % 2 == 0) {
+      setHue((int)((t / 4) % 360), 255);
+    } else {
+      setRGBLEDColor(0, 0, 0);
+    }
+  } else {
+    // 最後 1 秒：白光淡出
+    int bright = 255 - (long)(t - 2000) * 255 / 1000;
+    setRGBLEDColor(bright, bright, bright);
+  }
+}
+
+// ---------- 主程式 ----------
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(R_PIN, OUTPUT);
+  pinMode(G_PIN, OUTPUT);
+  pinMode(B_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);   // 按鈕另一腳接 GND
+  setRGBLEDColor(0, 0, 0);
+}
+
+void loop() {
+  unsigned long now = millis();
+  checkButton();
+  potValue = analogRead(POT_PIN);
+
+  if (bursting) {
+    runBurst(now);
+    return;
+  }
+
+  if (modeFlashing) {
+    if (now - modeFlashStart < 150) {
+      setRGBLEDColor(255, 255, 255);
+      return;
+    }
+    modeFlashing = false;
+  }
+
+  switch (mode) {
+    case 0: modeFanColor();    break;
+    case 1: modeRainbow(now);  break;
+    case 2: modeBeat(now);     break;
+    case 3: modeBreath(now);   break;
+  }
+
+  delay(1);
+}
